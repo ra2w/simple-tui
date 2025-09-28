@@ -1,0 +1,4 @@
+# Commands that will trigger interactive prompts
+/add
+/update
+/delete

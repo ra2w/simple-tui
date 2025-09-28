@@ -1,0 +1,17 @@
+# Example command script for headless mode
+# Lines starting with # are ignored
+
+/add apple
+/add banana --description "Yellow fruit"
+/add cherry --description "Small red fruit"
+/list
+/stats
+
+# Update an item
+/update banana --description "Tropical yellow fruit"
+/list
+
+# Delete an item
+/delete apple
+/list
+/stats

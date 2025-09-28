@@ -1,0 +1,3 @@
+INDIGO = "#5C7CFA"
+ACCENT = "#14B8A6"
+GRAY   = "#8787AF"
