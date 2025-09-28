@@ -5,6 +5,7 @@ from typing import Any, Iterable, List
 from rich.console import Console
 from rich.panel import Panel
 from rich.table import Table
+from rich.markdown import Markdown as RichMarkdown
 
 from .theme import INDIGO, GRAY
 
@@ -73,7 +74,7 @@ def render_elements(console: Console, elements: Any | Iterable[Any] | None):
         elif isinstance(e, Subheader):
             console.print(f"[bold]{e.text}[/bold]")
         elif isinstance(e, Markdown):
-            console.print(Panel.fit(e.text, border_style=INDIGO))
+            console.print(Panel.fit(RichMarkdown(e.text), border_style=INDIGO))
         elif isinstance(e, Text):
             console.print(e.text)
         elif isinstance(e, TableEl):
