@@ -109,6 +109,17 @@ class App:
             # One-time header in streaming mode
             render_elements(self.console, Markdown(f"{self.title}"))
 
+    def _ensure_event_loop(self) -> None:
+        try:
+            asyncio.get_running_loop()
+            return
+        except RuntimeError:
+            pass
+        try:
+            asyncio.get_event_loop()
+        except RuntimeError:
+            asyncio.set_event_loop(asyncio.new_event_loop())
+
     # Output helpers
     def _message(
         self,
@@ -251,6 +262,7 @@ class App:
                 for arg_name, recorded_value in spec.history_entries(values):
                     self.history.add(cmd_name, arg_name, str(recorded_value))
 
+                self._ensure_event_loop()
                 try:
                     fn(**{p.name: values.get(p.name) for p in inspect.signature(fn).parameters.values()})
                 except TypeError:
