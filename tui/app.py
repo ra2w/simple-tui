@@ -3,6 +3,8 @@ from dataclasses import dataclass
 from typing import Any, Callable, Dict, List, Optional, Union
 import inspect
 import pathlib
+import asyncio
+import sys
 
 from rich.console import Console
 from prompt_toolkit import PromptSession
@@ -69,6 +71,12 @@ class App:
                  interactive_prompts: bool = False, headless: bool = False,
                  transcript_path: Optional[pathlib.Path] = None,
                  transcript_format: str = "markdown"):
+        # Ensure event loop exists
+        try:
+            asyncio.get_event_loop()
+        except RuntimeError:
+            asyncio.set_event_loop(asyncio.new_event_loop())
+        
         self.id = id
         self.state: Dict[str, Any] = {}
         # Streaming mode only (append-only terminal output)
