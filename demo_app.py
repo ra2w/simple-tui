@@ -26,13 +26,20 @@ def main():
 
     # Initial state
     app.state.setdefault("items", [])  # [{id, name, desc}]
+    app.state.setdefault("notes", [])  # [{title, body}]
     app.state.setdefault("color", "indigo")
 
     @app.on_start
     def show_intro(app_instance: App):
-        app_instance.markdown("Type '/' for commands. Try /help to explore features.")
+        app_instance.markdown(
+            "Type '/' for commands. Try /help to explore features."
+        )
+        app_instance.write(
+            "Multi-line prompt demo: run /note and submit with Esc+Enter."
+        )
         app_instance.write(f"Current color: {app_instance.state.get('color', 'indigo')}")
         items = app_instance.state.get("items", [])
+        notes = app_instance.state.get("notes", [])
         if not items:
             app_instance.info("No items yet. Use /add to create one!")
         else:
@@ -41,6 +48,12 @@ def main():
                 for it in items
             ]
             app_instance.table("Items", rows, columns=["ID", "Name", "Description"])
+        if notes:
+            note_rows = [
+                {"Title": it["title"], "Body": it["body"].splitlines()[0][:40]}
+                for it in notes
+            ]
+            app_instance.table("Notes", note_rows, columns=["Title", "Body"])
 
     # --- Commands demonstrating providers and typed args ---
 
@@ -140,6 +153,21 @@ def main():
     def calc(a: int, b: int):
         """Add two numbers with number-range suggestions"""
         app.ok(f"calc: {a} + {b} = {a + b}")
+
+    @app.command(
+        "/note",
+        args=[
+            Arg("title", str, prompt=True, history=True),
+            Arg("body", str, prompt=True, multiline=True),
+        ],
+    )
+    def note(title: str, body: str):
+        """Capture a multi-line note (submit prompt with Esc+Enter)"""
+        notes = app.state.setdefault("notes", [])
+        notes[:] = [n for n in notes if n["title"] != title]
+        notes.append({"title": title, "body": body})
+        app.ok(f"Saved note '{title}' with {len(body.splitlines())} line(s)")
+        app.markdown(f"### {title}\n{body}")
 
     # Dataset + Dependent
     def fetch_projects(ctx: Dict[str, Any]):

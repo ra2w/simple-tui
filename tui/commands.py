@@ -21,6 +21,7 @@ class ParamPlan:
     required: bool
     repeat: bool
     prompt: bool
+    multiline: bool
     definition: Any
 
     def runtime(self) -> Dict[str, Any]:
@@ -34,6 +35,7 @@ class ParamPlan:
             "provided": False,
             "repeat": self.repeat,
             "prompt": self.prompt,
+            "multiline": self.multiline,
             "definition": self.definition,
         }
 
@@ -75,6 +77,7 @@ class CommandSpec:
                     required=True,
                     repeat=bool(getattr(a, "repeat", False)),
                     prompt=bool(getattr(a, "prompt", False)),
+                    multiline=bool(getattr(a, "multiline", False)),
                     definition=a,
                 )
             )
@@ -89,6 +92,7 @@ class CommandSpec:
                     required=False,
                     repeat=bool(getattr(o, "repeat", False)),
                     prompt=bool(getattr(o, "prompt", False)),
+                    multiline=bool(getattr(o, "multiline", False)),
                     definition=o,
                 )
             )
@@ -96,7 +100,13 @@ class CommandSpec:
         return cls(name=name, args=list(args), params=plans)
 
     def runtime_plan(self) -> List[Dict[str, Any]]:
-        return [plan.runtime() for plan in self.params]
+        return [
+            {
+                **plan.runtime(),
+                "value": [] if plan.repeat else None,
+            }
+            for plan in self.params
+        ]
 
     def completion_plan(self) -> List[Dict[str, Any]]:
         return [
@@ -139,12 +149,16 @@ class CommandSpec:
                     default_val = entry["default"]
                     if default_val is None:
                         values[entry["name"]] = []
+                        entry["value"] = []
                     elif isinstance(default_val, list):
                         values[entry["name"]] = list(default_val)
+                        entry["value"] = list(default_val)
                     else:
                         values[entry["name"]] = [default_val]
+                        entry["value"] = [default_val]
                 else:
                     values[entry["name"]] = entry["default"]
+                    entry["value"] = entry["default"]
 
         def next_pos_index(start: int = 0) -> int:
             j = start
@@ -174,8 +188,10 @@ class CommandSpec:
                     converted = entry["convert"](raw)
                     if entry["repeat"]:
                         values.setdefault(entry["name"], []).append(converted)
+                        entry.setdefault("value", []).append(converted)
                     else:
                         values[entry["name"]] = converted
+                        entry["value"] = converted
                     entry["provided"] = True
                 except Exception:
                     on_error(f"Invalid value for {key}")
@@ -186,12 +202,19 @@ class CommandSpec:
                     on_error("Too many positional arguments")
                     return None
                 entry = runtime[pos_cursor]
+                raw_tok = tok
+                if entry["multiline"] and not entry["repeat"]:
+                    raw_chunks = argv[i:]
+                    raw_tok = " ".join(raw_chunks)
+                    i = len(argv)
                 try:
-                    converted = entry["convert"](tok)
+                    converted = entry["convert"](raw_tok)
                     if entry["repeat"]:
                         values.setdefault(entry["name"], []).append(converted)
+                        entry.setdefault("value", []).append(converted)
                     else:
                         values[entry["name"]] = converted
+                        entry["value"] = converted
                     entry["provided"] = True
                 except Exception:
                     on_error(f"Invalid value for {entry['name']}")
@@ -204,21 +227,37 @@ class CommandSpec:
             entry["name"] for entry in runtime if entry["required"] and not entry["provided"]
         ]
         needs_prompt = [
-            entry for entry in runtime if entry["prompt"] and not entry["provided"]
+            entry
+            for entry in runtime
+            if entry["prompt"]
+            and (
+                not entry["provided"]
+                or (interactive and entry["multiline"])
+            )
         ]
 
         if (missing_required or needs_prompt) and interactive and prompt_fn:
-            to_prompt = [
-                entry
-                for entry in runtime
-                if (entry["required"] or entry["prompt"]) and not entry["provided"]
-            ]
+            to_prompt = []
+            for entry in runtime:
+                should_prompt = False
+                if (entry["required"] or entry["prompt"]) and not entry["provided"]:
+                    should_prompt = True
+                elif entry["prompt"] and entry["multiline"]:
+                    should_prompt = True
+                if should_prompt:
+                    to_prompt.append(entry)
             for entry in to_prompt:
                 plan = entry["plan"]
                 definition = plan.definition
                 default_attr = getattr(definition, "default", None)
                 default_text = None
-                if default_attr not in (None, [], {}):
+                entry_value = entry.get("value")
+                if entry_value not in (None, [], {}):
+                    if plan.repeat:
+                        default_text = ", ".join(str(v) for v in entry_value)
+                    else:
+                        default_text = str(entry_value)
+                elif default_attr not in (None, [], {}):
                     default_text = str(default_attr)
                 ans = prompt_fn(plan, default_text)
                 if ans is None:
@@ -226,6 +265,7 @@ class CommandSpec:
                     return None
                 if not ans and not entry["required"]:
                     entry["provided"] = True
+                    entry["value"] = entry_value
                     continue
                 try:
                     if plan.repeat:
@@ -235,9 +275,11 @@ class CommandSpec:
                             on_error(f"Missing: {plan.name}")
                             return None
                         if converted_items:
-                            values.setdefault(plan.name, []).extend(converted_items)
+                            values[plan.name] = converted_items
+                            entry["value"] = list(converted_items)
                     else:
                         values[plan.name] = plan.convert(ans)
+                        entry["value"] = values[plan.name]
                     entry["provided"] = True
                 except Exception:
                     on_error(f"Invalid value for {plan.name}")

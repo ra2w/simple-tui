@@ -17,7 +17,7 @@ from .commands import CommandRegistry, SlashCompleter, dispatch, CommandSpec
 from .ptkstyle import style as ptk_style
 from .ui import render_elements, Markdown, descriptors_to_elements
 from .theme import GRAY
-from .interaction import TUIInteraction, HeadlessInteraction
+from .interaction import Interaction, TUIInteraction, HeadlessInteraction
 from .transcript import TranscriptRecorder
 
 
@@ -35,6 +35,7 @@ class Arg:
     history: bool = False
     prompt: bool = False
     repeat: bool = False
+    multiline: bool = False
 
     def get_completer(self) -> Callable[[Dict[str, Any]], List[str]] | None:
         """Get the completer function for this argument."""
@@ -89,7 +90,7 @@ class App:
         self.prompt_history_path = pathlib.Path.home() / f".{id}" / "prompt_history.txt"
         self.prompt_history_path.parent.mkdir(parents=True, exist_ok=True)
         self._session: PromptSession | None = None
-        self.interaction = TUIInteraction()
+        self.interaction: Interaction | None = None
         self.interactive_prompts = interactive_prompts
         self._start_hooks: List[Callable[["App"], None]] = []
         self._before_prompt_hooks: List[Callable[["App"], None]] = []
@@ -247,7 +248,12 @@ class App:
                 prompt_fn = None
                 if self.interactive_prompts:
                     def prompt(plan, default_text):
-                        return self.interaction.ask_text(f"Enter {plan.name}", default=default_text)
+                        multiline = getattr(plan, "multiline", False)
+                        return self.interaction.ask_text(
+                            f"Enter {plan.name}",
+                            default=default_text,
+                            multiline=multiline
+                        )
                     prompt_fn = prompt
 
                 values = spec.parse(
@@ -263,10 +269,18 @@ class App:
                     self.history.add(cmd_name, arg_name, str(recorded_value))
 
                 self._ensure_event_loop()
+
+                # Prepare arguments
                 try:
-                    fn(**{p.name: values.get(p.name) for p in inspect.signature(fn).parameters.values()})
+                    kwargs = {p.name: values.get(p.name) for p in inspect.signature(fn).parameters.values()}
                 except TypeError:
-                    fn(**values)
+                    kwargs = values
+
+                # Check if handler is async and execute accordingly
+                if inspect.iscoroutinefunction(fn):
+                    asyncio.run(fn(**kwargs))
+                else:
+                    fn(**kwargs)
 
             help_text = (inspect.getdoc(fn) or "").strip()
             self.registry.register(cmd_name, handler, help_text, spec)
@@ -395,6 +409,9 @@ class App:
                 style=ptk_style,
                 history=FileHistory(str(self.prompt_history_path))
             )
+        # Initialize interaction with the configured session
+        if self.interaction is None:
+            self.interaction = TUIInteraction(session=self._session)
         completer = SlashCompleter(
             self.registry,
             history_store=self.history,
