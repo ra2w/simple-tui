@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+import inspect
 import shlex
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, Iterable, List, Optional, Sequence
@@ -128,7 +130,7 @@ class CommandSpec:
                 if val is not None:
                     yield plan.name, val
 
-    def parse(
+    async def parse(
         self,
         argv: Sequence[str],
         *,
@@ -259,7 +261,7 @@ class CommandSpec:
                         default_text = str(entry_value)
                 elif default_attr not in (None, [], {}):
                     default_text = str(default_attr)
-                ans = prompt_fn(plan, default_text)
+                ans = await asyncio.to_thread(prompt_fn, plan, default_text)
                 if ans is None:
                     on_error("Canceled")
                     return None
@@ -468,21 +470,29 @@ class SlashCompleter(Completer):
 
         suggestions = completer_fn(context)
         for suggestion in suggestions:
+            # Support tuples: (value, description)
+            if isinstance(suggestion, tuple):
+                value, description = suggestion
+                display_meta = description
+            else:
+                value = suggestion
+                display_meta = ""
+
             if (
                 completion_prefix
                 and not (active_token.startswith("--") and "=" not in active_token)
-                and not suggestion.startswith(completion_prefix)
+                and not value.startswith(completion_prefix)
             ):
                 continue
             yield Completion(
-                suggestion,
+                value,
                 start_position=-replacement_len,
-                display=suggestion,
-                display_meta="value",
+                display=value,
+                display_meta=display_meta,
             )
 
 
-def dispatch(registry: CommandRegistry, cmd: str, *, on_error=None):
+async def dispatch(registry: CommandRegistry, cmd: str, *, on_error=None):
     try:
         parts: List[str] = shlex.split(cmd.strip())
     except ValueError as exc:
@@ -499,4 +509,9 @@ def dispatch(registry: CommandRegistry, cmd: str, *, on_error=None):
         handler = on_error or err
         handler(f"Unknown: {name}")
         return
-    entry.handler(args)
+
+    # Handle both async and sync handlers
+    if inspect.iscoroutinefunction(entry.handler):
+        await entry.handler(args)
+    else:
+        entry.handler(args)

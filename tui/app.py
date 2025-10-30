@@ -222,21 +222,24 @@ class App:
         self._after_prompt_hooks.append(fn)
         return fn
 
-    def _fire_hooks(self, hooks: List[Callable[..., None]], *args: Any, label: str):
+    async def _fire_hooks(self, hooks: List[Callable[..., None]], *args: Any, label: str):
         for hook in hooks:
             try:
-                hook(*args)
+                if inspect.iscoroutinefunction(hook):
+                    await hook(*args)
+                else:
+                    hook(*args)
             except Exception as exc:
                 self.err(f"{label} error: {exc}")
 
-    def _run_start_hooks(self):
-        self._fire_hooks(self._start_hooks, self, label="on_start")
+    async def _run_start_hooks(self):
+        await self._fire_hooks(self._start_hooks, self, label="on_start")
 
-    def _run_before_prompt_hooks(self):
-        self._fire_hooks(self._before_prompt_hooks, self, label="before_prompt")
+    async def _run_before_prompt_hooks(self):
+        await self._fire_hooks(self._before_prompt_hooks, self, label="before_prompt")
 
-    def _run_after_prompt_hooks(self, text: str, handled: bool):
-        self._fire_hooks(self._after_prompt_hooks, self, text, handled, label="after_prompt")
+    async def _run_after_prompt_hooks(self, text: str, handled: bool):
+        await self._fire_hooks(self._after_prompt_hooks, self, text, handled, label="after_prompt")
 
     # Decorators
     def command(self, name: str, args: List[Arg | Opt]):
@@ -244,7 +247,7 @@ class App:
             cmd_name = name
             spec = CommandSpec.from_args(cmd_name, args, _converter_for, optional_types=(Opt,))
 
-            def handler(argv: List[str]):
+            async def handler(argv: List[str]):
                 prompt_fn = None
                 if self.interactive_prompts:
                     def prompt(plan, default_text):
@@ -256,7 +259,7 @@ class App:
                         )
                     prompt_fn = prompt
 
-                values = spec.parse(
+                values = await spec.parse(
                     argv,
                     on_error=self.err,
                     prompt_fn=prompt_fn,
@@ -268,8 +271,6 @@ class App:
                 for arg_name, recorded_value in spec.history_entries(values):
                     self.history.add(cmd_name, arg_name, str(recorded_value))
 
-                self._ensure_event_loop()
-
                 # Prepare arguments
                 try:
                     kwargs = {p.name: values.get(p.name) for p in inspect.signature(fn).parameters.values()}
@@ -278,7 +279,7 @@ class App:
 
                 # Check if handler is async and execute accordingly
                 if inspect.iscoroutinefunction(fn):
-                    asyncio.run(fn(**kwargs))
+                    await fn(**kwargs)
                 else:
                     fn(**kwargs)
 
@@ -288,7 +289,7 @@ class App:
 
         return deco
 
-    def _handle_command_text(
+    async def _handle_command_text(
         self,
         text: str,
         *,
@@ -298,30 +299,32 @@ class App:
     ) -> bool:
         handled = text.startswith("/")
 
-        def finish():
-            self._run_after_prompt_hooks(text, handled)
+        async def finish():
+            await self._run_after_prompt_hooks(text, handled)
             self._render()
 
         if handled:
             try:
-                dispatch(self.registry, text, on_error=self.err)
+                await dispatch(self.registry, text, on_error=self.err)
             except Exception as exc:
                 if catch_exceptions:
                     self.err(f"Command failed: {str(exc)}")
                     if fail_on_error:
                         return False
-                    finish()
+                    await finish()
                     return True
                 raise
         else:
-            message = "Commands must start with '/'" if from_script else "Type '/' to run a command"
-            self.err(message)
+            # Only show error if there are no after_prompt hooks to handle non-command input
+            if not self._after_prompt_hooks:
+                message = "Commands must start with '/'" if from_script else "Type '/' to run a command"
+                self.err(message)
             if fail_on_error:
                 return False
-            finish()
+            await finish()
             return True
 
-        finish()
+        await finish()
         return True
 
     def _render(self):
@@ -339,11 +342,11 @@ class App:
             queued_elements = descriptors_to_elements(q)
             render_elements(self.console, queued_elements)
 
-    def run_script(self, commands: Union[List[str], str, pathlib.Path], 
+    async def run_script(self, commands: Union[List[str], str, pathlib.Path],
                    prompt_responses: Optional[Dict[str, Any]] = None,
                    fail_on_error: bool = True):
         """Run a script of commands in headless mode.
-        
+
         Args:
             commands: List of commands, script file path, or multiline string
             prompt_responses: Dict mapping prompt names to responses
@@ -375,21 +378,21 @@ class App:
 
             self._headless_prompt_responses = prompt_responses or {}
 
-            self._run_start_hooks()
+            await self._run_start_hooks()
 
             for cmd in command_list:
-                self._run_before_prompt_hooks()
+                await self._run_before_prompt_hooks()
                 self._render()
 
                 if cmd.lower() in {"q", "quit", "exit"}:
-                    self._run_after_prompt_hooks(cmd, False)
+                    await self._run_after_prompt_hooks(cmd, False)
                     self._render()
                     break
 
                 if self.transcript:
                     self.transcript.record_command(cmd)
 
-                should_continue = self._handle_command_text(
+                should_continue = await self._handle_command_text(
                     cmd,
                     fail_on_error=fail_on_error,
                     from_script=True,
@@ -403,7 +406,7 @@ class App:
             self.interaction = original_interaction
             self.interactive_prompts = original_interactive
     
-    def run(self):
+    async def run(self):
         if self._session is None:
             self._session = PromptSession(
                 style=ptk_style,
@@ -417,30 +420,36 @@ class App:
             history_store=self.history,
             state_provider=lambda: self.state,
         )
-        self._run_start_hooks()
+        await self._run_start_hooks()
         if self.append_only:
             # Initial hint only in streaming mode
             self.console.print("\nType '/' for commands, or 'q' to quit.")
         while True:
-            self._run_before_prompt_hooks()
+            await self._run_before_prompt_hooks()
             self._render()
             try:
-                s = self._session.prompt(HTML('<prompt>#</prompt> '), completer=completer).strip()
+                # Run sync prompt in thread to not block event loop
+                s = await asyncio.to_thread(
+                    self._session.prompt,
+                    HTML('<prompt>#</prompt> '),
+                    completer=completer
+                )
+                s = s.strip()
             except (KeyboardInterrupt, EOFError):
                 self.info("Goodbye! 👋")
-                self._run_after_prompt_hooks("", False)
+                await self._run_after_prompt_hooks("", False)
                 self._render()
                 break
 
             if s.lower() in {"q", "quit", "exit"}:
-                self._run_after_prompt_hooks(s, False)
+                await self._run_after_prompt_hooks(s, False)
                 self._render()
                 break
             if not s:
-                self._run_after_prompt_hooks(s, False)
+                await self._run_after_prompt_hooks(s, False)
                 self._render()
                 continue
-            self._handle_command_text(
+            await self._handle_command_text(
                 s,
                 fail_on_error=False,
                 from_script=False,
